@@ -7,10 +7,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
-      - run: npm install && npm run build && npx cap sync android
+      - name: Install Dependencies
+        run: npm install --no-audit --no-fund
+      - name: Build Web App Directly
+        run: npx vite build
+      - name: Sync Capacitor
+        run: npx cap sync android
       - uses: actions/setup-java@v4
         with: { distribution: 'zulu', java-version: 17 }
-      - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+      - name: Build APK
+        run: cd android && chmod +x gradlew && ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: Tasks-APK
