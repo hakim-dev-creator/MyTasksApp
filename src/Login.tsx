@@ -21,6 +21,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { auth } from './lib/firebase';
+import { NativeBiometric } from '@capgo/capacitor-native-biometric';
 
 /* -------------------------------------------------------------------------- */
 /*  Copy + helpers                                                             */
@@ -167,9 +168,7 @@ function Field({
           htmlFor={id}
           className={[
             'pointer-events-none absolute right-12 origin-right transition-all duration-150 motion-reduce:transition-none',
-            // floated position
             'top-2 text-xs',
-            // resting position (placeholder shown, not focused)
             'peer-placeholder-shown:top-[19px] peer-placeholder-shown:text-base',
             'peer-focus:top-2 peer-focus:text-xs',
             hasError
@@ -183,7 +182,6 @@ function Field({
         {trailing && <div className="absolute left-2 top-1/2 -translate-y-1/2">{trailing}</div>}
       </div>
 
-      {/* Height-animated error line */}
       <div
         className={[
           'grid transition-[grid-template-rows,opacity] duration-200 motion-reduce:transition-none',
@@ -224,7 +222,6 @@ function Banner({ kind, text }: { kind: 'error' | 'success'; text: string }) {
   );
 }
 
-/* Simple monochrome brand glyphs (outlined style) */
 const GoogleGlyph = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden fill="currentColor">
     <path d="M21.35 11.1H12v2.98h5.35c-.23 1.4-1.64 4.1-5.35 4.1a5.9 5.9 0 0 1 0-11.8c1.87 0 3.12.8 3.84 1.48l2.62-2.52C17.77 3.76 15.1 2.6 12 2.6a9.4 9.4 0 1 0 0 18.8c5.43 0 9.03-3.82 9.03-9.2 0-.62-.07-1.09-.15-1.1z" />
@@ -251,16 +248,18 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [biometricReady, setBiometricReady] = useState(false);
 
-  // Platform authenticator (fingerprint / face / screen lock) via WebAuthn.
+  // Check if Native Biometric (Fingerprint/FaceID) is available on the device
   useEffect(() => {
     let active = true;
-    const pkc = window.PublicKeyCredential;
-    if (pkc?.isUserVerifyingPlatformAuthenticatorAvailable) {
-      pkc
-        .isUserVerifyingPlatformAuthenticatorAvailable()
-        .then((ok) => active && setBiometricReady(ok))
-        .catch(() => active && setBiometricReady(false));
-    }
+    const checkBiometric = async () => {
+      try {
+        const result = await NativeBiometric.isAvailable();
+        if (active) setBiometricReady(result.isAvailable);
+      } catch (err) {
+        if (active) setBiometricReady(false);
+      }
+    };
+    checkBiometric();
     return () => {
       active = false;
     };
@@ -301,10 +300,26 @@ export default function Login() {
       if (mode === 'reset') {
         await sendPasswordResetEmail(auth, trimmed);
         setMessage('تم إرسال رابط استعادة كلمة المرور إلى بريدك الإلكتروني بنجاح.');
-      } else if (mode === 'login') {
-        await signInWithEmailAndPassword(auth, trimmed, password);
       } else {
-        await createUserWithEmailAndPassword(auth, trimmed, password);
+        // Handle both login and signup
+        if (mode === 'login') {
+          await signInWithEmailAndPassword(auth, trimmed, password);
+        } else {
+          await createUserWithEmailAndPassword(auth, trimmed, password);
+        }
+        
+        // Save credentials securely after successful login/signup
+        if (biometricReady) {
+          try {
+            await NativeBiometric.setCredentials({
+              username: trimmed,
+              password: password,
+              server: 'com.mytasks.app', // Unique ID for your app
+            });
+          } catch (ignoredError) {
+            // Silently ignore if saving credentials fails
+          }
+        }
       }
     } catch (err: unknown) {
       setError(mapAuthError(err));
@@ -327,11 +342,36 @@ export default function Login() {
     }
   };
 
-  const handleBiometric = () => {
-    // TODO: implement a WebAuthn (passkey) flow — navigator.credentials.get()
-    // with a challenge from your backend / Firebase custom-token function.
+  const handleBiometric = async () => {
     setError('');
-    setMessage('تسجيل الدخول بالبصمة سيتوفر قريباً.');
+    setMessage('');
+    try {
+      // 1. Verify Fingerprint/Face
+      await NativeBiometric.verifyIdentity({
+        reason: 'الرجاء التحقق من هويتك لتسجيل الدخول',
+        title: 'تسجيل الدخول بالبصمة',
+        subtitle: 'استخدم البصمة للوصول إلى مهامك',
+        description: 'ضع إصبعك على المستشعر',
+      });
+
+      // 2. Fetch saved credentials from device keystore
+      const credentials = await NativeBiometric.getCredentials({
+        server: 'com.mytasks.app',
+      });
+
+      // 3. Login to Firebase with fetched credentials
+      setLoading(true);
+      await signInWithEmailAndPassword(auth, credentials.username, credentials.password);
+
+    } catch (err: any) {
+      setLoading(false);
+      // If user cancelled the fingerprint popup, do nothing
+      if (err.code === 'user_cancel' || err.message?.includes('cancel')) {
+        return;
+      }
+      // If no credentials found or fingerprint failed
+      setError('يرجى تسجيل الدخول بالبريد وكلمة المرور يدوياً لتفعيل البصمة للمرة الأولى.');
+    }
   };
 
   const copy = COPY[mode];
